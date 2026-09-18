@@ -1,0 +1,107 @@
+## O problema
+
+O catálogo da GEMM muda toda semana: coleção nova, variação de banho, foto refeita, produto que sai de linha. Cadastrar direto no painel do Shopify tem um defeito de fundo — **salvar e publicar ficam perto demais**. Um produto sem foto, sem preço ou sem descrição aparece na loja no meio do cadastro, e preparar cinquenta produtos com calma para lançar todos juntos vira um exercício de disciplina, não de ferramenta.
+
+O Product Manager é um aplicativo desktop em que a equipe prepara o catálogo inteiro antes de ele existir para o cliente. Salvar um produto no aplicativo **não cria nada no Shopify**.
+
+## Minha parte
+
+Sou o único desenvolvedor: o aplicativo em Electron, o serviço intermediário que fala com o Shopify, a sincronização, a publicação, o empacotamento e as atualizações. O aplicativo cresceu além do catálogo — hoje também mostra as vendas do dia e o estoque por loja —, mas este estudo cobre o núcleo: cadastro, revisão e publicação.
+
+## 1. Salvar não é publicar
+
+O fluxo do aplicativo tem uma direção só, e a publicação é o último passo, nunca um efeito colateral:
+
+<Pipeline
+  steps={["Cadastrar", "Revisar", "Corrigir", "Definir pares", "Marcar como pronto", "Publicar"]}
+  caption="Cada etapa tem uma tela própria. Um produto pode ficar semanas entre o cadastro e a publicação."
+/>
+
+O que separa "em revisão" de "pronto" é um checklist. Algumas ausências impedem a publicação; outras só avisam:
+
+| Item          | Se estiver faltando |
+| ------------- | ------------------- |
+| Título        | **bloqueia**        |
+| Descrição     | **bloqueia**        |
+| Imagem        | **bloqueia**        |
+| Preço final   | **bloqueia**        |
+| Fornecedor    | **bloqueia**        |
+| Coleção       | avisa               |
+| Tags          | avisa               |
+| Variantes (quando o produto tem) | avisa |
+| Custo         | avisa               |
+| Produtos pares | avisa              |
+
+A regra está numa única função pura, sem banco nem interface. A mesma função alimenta o checklist da tela, o botão "Marcar como pronto", a simulação de publicação e a validação que roda imediatamente antes de enviar. Se as quatro usassem cópias da regra, bastaria uma divergência para a tela dizer "pronto" e a publicação recusar.
+
+## 2. Nenhuma credencial no cliente
+
+Um aplicativo desktop é instalado na máquina de outra pessoa, e tudo o que vai dentro dele pode ser lido. Por isso o aplicativo **não fala com o Shopify**:
+
+<Pipeline
+  steps={["Aplicativo desktop", "Broker", "Shopify Admin API"]}
+  caption="Quem autentica e chama o Shopify é o broker. O segredo do aplicativo e os tokens de acesso nunca existem no desktop."
+/>
+
+O broker é um serviço em Docker que faz o login OAuth com a loja, guarda os tokens cifrados em repouso e repassa as chamadas. Do lado do desktop, a parte visível do aplicativo roda isolada, sem acesso a Node.js, e só conversa com o processo principal por um conjunto fechado de canais. Todo dado que atravessa essa fronteira é validado por um schema antes de tocar banco, disco ou rede.
+
+A distribuição segue o mesmo princípio. Os instaladores não ficam em lugar público: são servidos pelo próprio broker, atrás de autenticação. E quem publica uma versão nova usa uma chave diferente da que o aplicativo usa — se fosse a mesma, qualquer instalação poderia empurrar um executável para todas as outras.
+
+## 3. Publicar sem duplicar
+
+A parte mais delicada do projeto não é criar um produto no Shopify. É o que acontece quando **a resposta se perde**: a loja criou o produto, a rede caiu antes de o aplicativo saber, e o usuário clica em "tentar de novo".
+
+Sem cuidado, isso vira um produto duplicado na loja. A solução tem três partes:
+
+- **Identidade antes da chamada.** Cada produto recebe uma chave de publicação, gravada localmente *antes* da primeira requisição e enviada ao Shopify como identificador próprio, único por definição.
+- **Conferir antes de reenviar.** Uma nova tentativa primeiro procura o produto por essa chave. Se ele já existe, o aplicativo reconcilia em vez de criar outro — e também não reenvia as imagens.
+- **Recuperação ao abrir.** Se o aplicativo fechar no meio de uma publicação, nada fica eternamente em "publicando". Produtos com chave podem ser retomados com segurança; registros antigos, anteriores a essa estratégia, voltam para revisão, porque republicá-los sem conferência poderia duplicar.
+
+<Callout title="O critério que usei">
+Quando não dá para saber se uma operação aconteceu, a próxima tentativa tem que perguntar antes de agir. Repetir no escuro é como um produto aparece duas vezes na vitrine.
+</Callout>
+
+A publicação em massa roda em lotes de dez produtos, no máximo três ao mesmo tempo, com pausa entre lotes. Falhas temporárias são repetidas com espera exponencial, e o aplicativo lê o saldo de consultas que a própria loja informa a cada resposta, pausando antes de estourar o limite em vez de depois. Uma falha isolada não derruba o lote: cada produto termina com seu próprio resultado na tela. Se um produto foi criado e só a ligação com seus pares falhou, ele não é recriado na próxima tentativa — a ligação pendente é que fica para depois.
+
+## 4. Produtos que combinam
+
+Cada produto da loja mostra outros que "combinam com ele". Escolher esses pares à mão para centenas de peças não escala, então o aplicativo sugere — e a equipe aprova.
+
+A sugestão é uma pontuação ponderada, calculada a partir de atributos que o catálogo já tem:
+
+| Critério                         | Peso |
+| -------------------------------- | ---- |
+| Mesma coleção                    | 30%  |
+| Mesma família de nome            | 25%  |
+| Categoria complementar           | 20%  |
+| Tags em comum                    | 10%  |
+| Faixa de preço                   | 5%   |
+| Fornecedor                       | 5%   |
+| Disponível em estoque            | 5%   |
+
+"Família de nome" é o que sobra do título depois de tirar metal, cor e tamanho: *Brinco Bloom Dourado* e *Colar Bloom Prata* são da mesma família. "Categoria complementar" vem de uma tabela de pares que fazem sentido juntos — brinco com colar, colar com pingente, pingente com corrente.
+
+Escolhi deliberadamente não usar IA aqui. Uma função determinística sobre dados que já estão no computador responde na hora, não depende de serviço externo e, principalmente, **explica cada sugestão**: a tela mostra quais critérios somaram pontos. A equipe aprova pares em massa, e o aplicativo grava o resultado direto no campo que a loja exibe.
+
+Esse recurso criou um problema na publicação: se *Brinco Bloom* e *Colar Bloom* são novos e apontam um para o outro, quando o primeiro é criado o segundo ainda não existe na loja para ser referenciado. A publicação por isso tem **duas fases** — primeiro cria todos os produtos e guarda os identificadores que a loja devolveu; depois resolve os pares entre eles.
+
+## 5. Duas pessoas, dois computadores
+
+Na primeira versão, o catálogo em preparação vivia só no computador de quem cadastrava. Depois ele passou a ser compartilhado pelo broker, para que o mesmo catálogo pudesse ser trabalhado de computadores diferentes.
+
+Compartilhar trouxe a pergunta clássica: o que acontece quando duas pessoas editam o mesmo produto ao mesmo tempo? Cada produto tem um número de revisão, e uma gravação só é aceita se partir da revisão atual. A primeira a salvar vence; a segunda recebe um conflito e recarrega a versão mais nova, em vez de sobrescrever o trabalho da outra em silêncio. Produtos excluídos deixam um registro de exclusão, para que o cache antigo de outro computador não os ressuscite.
+
+Cada computador mantém uma cópia local. Se o serviço estiver fora do ar, o aplicativo ainda abre e mostra o catálogo — mas as edições compartilhadas **falham de forma explícita** até a conexão voltar, em vez de fingir que salvaram.
+
+## 6. Atualizar sem interromper
+
+O aplicativo procura atualizações sozinho e baixa a versão nova em segundo plano, mas **nunca a instala sozinho**. Instalar reinicia o processo, e reiniciar no meio de uma publicação em massa deixaria produtos pela metade na loja. A atualização acontece quando o usuário clica em "Reiniciar e atualizar" — recusada, com o motivo na tela, enquanto houver publicação em andamento — ou quando ele fecha o aplicativo.
+
+## Qualidade
+
+O projeto tem cerca de 900 testes automatizados entre o aplicativo e o broker, cobrindo principalmente as regras puras — checklist, pontuação de pares, variantes, valores monetários — e o contrato entre as partes do aplicativo. A publicação real nunca roda durante os testes: mutações na loja só acontecem depois de uma ação explícita no aplicativo.
+
+## O que ainda está em aberto
+
+- **Importar CSV para o catálogo em preparação** ficou fora do escopo inicial. Exportar em formato compatível com o Shopify já funciona.
+- **A detecção de duplicidade é um aviso, não um bloqueio.** Ela compara SKU e código de barras com a cópia local da loja — é instantânea e não gasta limite de consultas, mas depende de a sincronização estar recente. Por isso quem decide publicar mesmo assim é o usuário.

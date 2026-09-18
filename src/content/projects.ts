@@ -48,7 +48,7 @@ export const projects: Project[] = [
     period: "2026 — atual",
     stack: ["Electron", "React", "TypeScript", "Shopify Polaris", "SQLite", "Prisma", "Zod"],
     links: [],
-    hasCaseStudy: false,
+    hasCaseStudy: true,
     privateCode: true,
   },
   {
