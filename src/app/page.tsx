@@ -113,7 +113,7 @@ export default function Home() {
           </div>
           <div className="mt-8 grid gap-5 md:grid-cols-2">
             {work.map((project, i) => (
-              <ProjectCard key={project.slug} project={project} index={i} featured={project.hasCaseStudy} />
+              <ProjectCard key={project.slug} project={project} index={i} featured={i === 0} />
             ))}
           </div>
 
