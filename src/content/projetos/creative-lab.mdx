@@ -1,0 +1,103 @@
+## O problema
+
+A GEMM investe em mídia paga todo mês, e o time de marketing precisava responder uma pergunta que os painéis prontos não respondem: **qual tipo de criativo funciona, em que contexto, e com qual evidência.**
+
+"Qual anúncio vendeu mais" é fácil de perguntar e enganoso de responder. Um vídeo que rodou na campanha de Dia dos Namorados e uma imagem estática que rodou em remarketing competiram em leilões diferentes, com públicos diferentes, e colocá-los lado a lado num ranking produz uma conclusão com cara de dado e nenhuma validade.
+
+O Creative Lab existe para fazer essa comparação do jeito certo — e para deixar claro na tela quando ela não pode ser feita.
+
+## Minha parte
+
+Sou o único desenvolvedor do projeto: modelagem do banco, API, integração com a fonte de dados, regras analíticas, interface e deploy. As decisões abaixo são as que mais pesaram no resultado.
+
+## 1. Comparar só o que é comparável
+
+Vencedores só são definidos **dentro de um grupo comparável**, nunca no catálogo inteiro. O usuário monta o grupo, e o sistema avisa o que torna a comparação frágil.
+
+A primeira versão dessa regra bloqueava demais: exigia mesma campanha, mesmo canal e entrega no período. Isso impedia um caso legítimo e frequente — comparar conscientemente criativos de campanhas diferentes. Afrouxei a regra para que apenas o **formato** fosse bloqueante, porque imagem contra vídeo não tem interpretação que salve. Canal, campanha, público, período e modelo de atribuição diferentes passaram a gerar **avisos visíveis** em vez de bloqueio.
+
+Incluir um anúncio de formato diferente continua possível, mas exige uma justificativa escrita, que fica registrada no histórico de revisões. Nunca é silencioso.
+
+## 2. Ausente não é zero
+
+Essa é a regra que atravessa o sistema inteiro.
+
+| Valor  | Significado                          |
+| ------ | ------------------------------------ |
+| `null` | a fonte **não forneceu** a métrica   |
+| `0`    | a métrica foi medida e vale zero     |
+
+Um anúncio sem leads na fonte e um anúncio com zero leads são fatos diferentes: o primeiro é desconhecido, o segundo é um resultado ruim. Tratar os dois como zero produziria custo por lead falso, elegibilidade falsa e diagnóstico falso.
+
+Na prática, toda coluna de métrica diária aceita nulo, a interface mostra `—` com uma explicação no lugar de zero, e uma métrica ausente nunca satisfaz um critério mínimo. Qualquer fórmula devolve nulo quando falta um dos lados ou quando o denominador é zero: um custo por aquisição com zero compras é **indefinido**, não infinito e não zero.
+
+## 3. Agregação ponderada
+
+Taxas agregadas são calculadas a partir dos **totais**, nunca pela média das taxas de cada anúncio. Um exemplo mostra por quê:
+
+| Anúncio | Cliques | Impressões | CTR   |
+| ------- | ------- | ---------- | ----- |
+| A       | 10      | 100        | 10,0% |
+| B       | 10      | 9.900      | 0,1%  |
+
+- **Ponderado:** 20 cliques ÷ 10.000 impressões = **0,2%**
+- **Média simples:** (10% + 0,1%) ÷ 2 = **5,05%**
+
+A média simples dá o mesmo peso a um anúncio com 100 impressões e a outro com 9.900. O mesmo vale para CPC, CPM, CPA e ROAS, e em todos os níveis da hierarquia campanha → conjunto → anúncio o total é a soma dos filhos.
+
+Todas essas regras vivem em funções puras, sem acesso a banco ou rede, cobertas por testes unitários. É o que me deixa mudar a interface sem medo de mudar o número.
+
+## 4. Quatro diagnósticos
+
+Dentro de um grupo, cada anúncio elegível cai em um de quatro diagnósticos, a partir de dois eixos relativos ao próprio grupo:
+
+<DiagnosticMatrix />
+
+Antes de classificar, o anúncio precisa atingir mínimos de investimento, impressões, cliques e conversões. Quem não atinge recebe **Dados insuficientes** — que não é o mesmo que "Fraco". É ausência de evidência, não evidência de ausência.
+
+Anúncios inelegíveis também ficam de fora do cálculo da mediana. Um criativo com 1 clique em 10 impressões teria CTR de 10% e deslocaria a régua de todos os outros.
+
+## 5. Uma sincronização que não mente
+
+Os dados vêm da Triple Whale, que expõe as métricas de mídia por uma API de SQL sobre ClickHouse. O painel **não** consulta a fonte a cada clique:
+
+<Pipeline
+  steps={["Triple Whale", "Catálogo de queries no back-end", "PostgreSQL", "API interna", "Interface"]}
+  caption="O front-end nunca fala com a fonte de dados. Ele pede parâmetros validados à API, que responde a partir do banco."
+/>
+
+Algumas decisões desse fluxo:
+
+- **Janela de 7 dias relida a cada execução.** Métricas de atribuição continuam mudando por alguns dias depois da veiculação. Reler a última semana mantém o dado correto sem pagar o custo de sincronizar o histórico inteiro.
+- **Escrita idempotente.** Tudo entra por upsert na chave da fonte, então rodar o mesmo período duas vezes atualiza em vez de duplicar.
+- **Um lock no banco, não na memória.** Existem pelo menos três processos capazes de sincronizar ao mesmo tempo. Uso um advisory lock do PostgreSQL, o único ponto que todos enxergam, e quem não consegue o lock desiste em vez de enfileirar. O teste desse lock abre uma segunda conexão de verdade — com um cliente só, ele passaria sem provar nada.
+- **Sincronização como processo, não como rota HTTP.** Os jobs rodam agendados e terminam. Um endpoint de sincronização precisaria de segredo, ficaria exposto e poderia ser cortado no meio por timeout de proxy.
+
+Quando algo parece errado — suspeita de truncamento, pedido sem anúncio correspondente, métrica ausente — o sistema não esconde: registra um **problema de qualidade de dados** que aparece numa tela própria da interface.
+
+## 6. Uma métrica que eu me recusei a mostrar
+
+*Hook rate* mede quantas pessoas pararam nos primeiros 3 segundos de um vídeo, e o time queria esse número. A fonte não expõe visualizações de 3 segundos. Ela tem um campo de reproduções, e usá-lo daria entre 92% e 98% para todos os criativos, porque esse campo mede autoplay, não a capacidade de prender atenção.
+
+Mostrar esse número teria agradado na reunião e enganado todas as decisões seguintes. Ele aparece na interface com o nome certo — **taxa de reprodução** — e o hook rate segue marcado como indisponível, com o motivo escrito.
+
+<Callout title="O critério que usei">
+Se a fonte não mede, a interface não inventa. Um traço com uma explicação é mais útil do que um número bonito que ninguém sabe que está errado.
+</Callout>
+
+## 7. IA como sugestão, nunca como verdade
+
+A plataforma tem um copiloto de IA opcional, desligado por padrão, que sugere atributos de um criativo — elementos visuais, tipo de gancho e, em vídeos, características tiradas de até sete quadros reais extraídos com FFmpeg.
+
+Os limites são estritos. A resposta é validada contra um catálogo fechado de campos, e qualquer campo desconhecido descarta a resposta inteira. A IA não calcula nem sugere nenhuma métrica de performance, elegibilidade ou diagnóstico: tudo isso continua determinístico. E nada vira classificação oficial sem uma pessoa **aceitar, corrigir ou rejeitar** a sugestão.
+
+## A segunda versão
+
+O Creative Lab é a segunda versão do sistema. A primeira, que também escrevi, era um painel sem banco de dados: todo estado vivia na memória do navegador, e as análises eram consultas feitas na hora.
+
+Uma auditoria de segurança e de corretude analítica que fiz nessa versão mostrou problemas que não valiam remendo. Reescrevi com PostgreSQL e Prisma, autenticação própria com papéis de acesso (administrador, editor e leitor), validação de entrada em toda rota, fila de jobs persistida no banco com retry e o módulo de regras analíticas descrito acima.
+
+## O que ainda está em aberto
+
+- **Leads e custo por lead** não existem na fonte. A interface mostra `—`, e os leads podem ser importados por CSV.
+- **Pedidos distintos:** a consulta de contagem distinta é recusada pela fonte. O sistema cai numa contagem simples e registra um problema de qualidade de dados, porque as compras podem aparecer infladas quando um pedido é atribuído a mais de um anúncio. O limite está documentado e visível — não resolvido.
