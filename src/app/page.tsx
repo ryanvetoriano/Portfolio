@@ -121,7 +121,7 @@ export default function Home() {
             <h2 className={sectionTitle}>Projetos acadêmicos</h2>
             <span className="text-sm text-muted-foreground">FIAP · 2025 — 2026</span>
           </div>
-          <div className="mt-8 grid gap-5 md:grid-cols-3">
+          <div className="mt-8 grid gap-5 md:grid-cols-2">
             {academic.map((project, i) => (
               <ProjectCard key={project.slug} project={project} index={work.length + i} />
             ))}

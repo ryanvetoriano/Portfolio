@@ -1,0 +1,70 @@
+## O contexto
+
+O FutureVet é um trabalho acadêmico da FIAP: uma API de gestão veterinária, com donos, pets, vacinas e consultas. O enunciado pedia CRUD, banco e documentação.
+
+Entreguei isso, e depois continuei — porque um CRUD que funciona na apresentação e uma API que alguém consegue operar são coisas diferentes. A pergunta que guiou o resto do projeto foi: **se isso estivesse no ar e parasse às três da manhã, dava para descobrir o motivo?**
+
+## Minha parte
+
+Projeto individual, do modelo de dados ao empacotamento: domínio, aplicação, persistência, API, autenticação, observabilidade e testes.
+
+## 1. A regra mora no domínio
+
+O projeto é dividido em quatro camadas: domínio, aplicação, infraestrutura e API. A divisão só vale alguma coisa se a regra de negócio ficar de fato no domínio, e não espalhada nos controllers.
+
+As regras vivem nas entidades e são validadas na construção do objeto:
+
+- a senha precisa ter no mínimo oito caracteres;
+- o CPF é único por usuário;
+- o peso do pet tem que ser maior que zero e a idade, maior ou igual a zero;
+- a próxima dose de uma vacina não pode ser anterior à data em que ela foi aplicada;
+- a hora da consulta segue o formato `HH:mm`.
+
+Um objeto inválido não chega a existir. Isso torna as regras testáveis sem banco, sem HTTP e sem contêiner — e é por isso que os testes unitários rodam em menos de um segundo.
+
+## 2. Erro é resposta, não exceção vazando
+
+Toda falha sai no formato **ProblemDetails**, o padrão da RFC 9457: um corpo JSON com tipo, título, status e detalhe. Um tratamento global converte as exceções do domínio nesse formato.
+
+O valor não é estético. Sem isso, uma violação de regra de negócio e um erro de programação chegam ao cliente do mesmo jeito — quase sempre como um `500` genérico —, e quem consome a API não consegue distinguir "você mandou um dado inválido" de "eu quebrei".
+
+## 3. Dá para descobrir o que aconteceu
+
+Essa é a parte que o enunciado não pedia:
+
+<Pipeline
+  steps={["Requisição", "Correlation ID", "Log estruturado", "Trace e métricas", "Health checks"]}
+  caption="Cada requisição recebe um identificador próprio, que segue em todos os registros gerados por ela."
+/>
+
+- **Correlation ID.** Um middleware dá um identificador a cada requisição e o propaga para todos os registros de log. Sem ele, investigar um erro é ler linhas soltas e torcer para que sejam da mesma chamada.
+- **Log estruturado com Serilog**, em console e em arquivo com rotação diária.
+- **Tracing e métricas com OpenTelemetry**, cobrindo a API, as chamadas HTTP, o Entity Framework e a camada de aplicação. As métricas são expostas em `/metrics` no formato que o Prometheus lê.
+- **Health checks separados.** `/health/live` responde se o processo está de pé; `/health/ready` verifica se as dependências — banco e serviço externo — estão acessíveis. São perguntas diferentes: um processo vivo sem banco não deve receber tráfego, mas também não deve ser reiniciado.
+
+## 4. A chave nunca entra no repositório
+
+A API usa JWT: leitura e cadastro são públicos, e toda operação de escrita exige um token válido.
+
+A chave que assina esses tokens não está versionada. E o comportamento quando ela falta é diferente em cada ambiente, de propósito:
+
+| Ambiente | Sem a chave configurada |
+| --- | --- |
+| Desenvolvimento | sobe com uma chave efêmera, gerada a cada execução, e registra um aviso. Os tokens não sobrevivem a um reinício |
+| Qualquer outro | **não sobe**, e explica na inicialização o que precisa ser configurado |
+
+<Callout title="O critério que usei">
+Em desenvolvimento, atrito atrapalha: ninguém deveria precisar configurar um segredo para rodar o projeto pela primeira vez. Em produção, atrito é proteção. O pior cenário é subir assinando tokens com um valor improvisado e ninguém perceber.
+</Callout>
+
+## 5. Testes que rodam num clone limpo
+
+São **206 testes automatizados**: 95 unitários sobre domínio e aplicação, com xUnit e Moq, e 111 de integração que sobem a API inteira e conversam com ela por HTTP, incluindo os endpoints de observabilidade.
+
+O número importa menos do que a condição: eles passam num clone recém-baixado do repositório, sem nenhum preparo além de restaurar as dependências.
+
+## O que ainda está em aberto
+
+**As senhas são guardadas em texto puro**, como foram modeladas nas primeiras entregas da disciplina. O login compara em tempo constante, o que evita descobrir a senha pelo tempo de resposta, mas isso não resolve o problema de fundo: guardar só o hash, com PBKDF2 ou BCrypt.
+
+Não é difícil de corrigir — é uma migration e a reescrita das senhas existentes. Está documentado como limitação conhecida no repositório, e não escondido, porque a pior versão desse problema é aquela em que ninguém sabe que ele existe.
