@@ -27,6 +27,7 @@ export const metadata: Metadata = {
     locale: "pt_BR",
     siteName: site.name,
   },
+  twitter: { card: "summary_large_image" },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
