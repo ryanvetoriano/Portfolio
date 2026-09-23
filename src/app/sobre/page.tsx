@@ -25,8 +25,8 @@ export default function SobrePage() {
           Sistemas na FIAP.
         </p>
         <p>
-          Hoje sou o único responsável técnico por duas aplicações internas da GEMM, marca de joias
-          que opera e-commerce no Shopify e varejo físico. Uma é a plataforma que o marketing usa
+          Hoje sou o único responsável técnico por duas aplicações internas da GEMM, marca de acessórios
+          femininos que opera e-commerce no Shopify e varejo físico. Uma é a plataforma que o marketing usa
           para decidir onde colocar verba de mídia paga; a outra é o aplicativo em que a equipe
           prepara o catálogo antes de publicar na loja.
         </p>

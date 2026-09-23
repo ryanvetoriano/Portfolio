@@ -82,7 +82,8 @@ export default function Home() {
             className="rise mt-6 max-w-[52ch] text-base text-pretty text-foreground/70 md:text-lg"
             style={{ animationDelay: ".16s" }}
           >
-            Sou o único desenvolvedor da GEMM, marca de joias com e-commerce e lojas físicas. Faço do
+            Sou o único desenvolvedor da GEMM, marca de acessórios femininos com e-commerce e lojas
+            físicas. Faço do
             banco à interface duas aplicações usadas todos os dias pelo marketing e pela operação — e
             cuido para que o número na tela signifique o que parece. Último semestre de ADS na FIAP.
           </p>
